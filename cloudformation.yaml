@@ -1,0 +1,177 @@
+AWSTemplateFormatVersion: 2010-09-09
+Resources:
+  DynamoDBTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: "orders-poc-table"
+      AttributeDefinitions:
+        - AttributeName: PK
+          AttributeType: S
+        - AttributeName: SK
+          AttributeType: S
+      KeySchema: 
+        - AttributeName: PK
+          KeyType: "HASH"
+        - AttributeName: SK
+          KeyType: "RANGE"
+      ProvisionedThroughput:
+        ReadCapacityUnits: 5
+        WriteCapacityUnits: 5
+
+  QueryRole:
+    Type: AWS::IAM::Role
+    Properties: 
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+              -  apigateway.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Description: A temporary universal role to query DynamoDB from the API Gateway
+      ManagedPolicyArns: 
+        - arn:aws:iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs
+      RoleName: poc-query-role
+
+  QueryPolicy:
+    Type: AWS::IAM::Policy
+    Properties: 
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - 'dynamodb:Query'
+            Resource: !GetAtt DynamoDBTable.Arn
+      PolicyName: QueryDynamoDB
+      Roles: 
+        - !Ref QueryRole
+
+  APIGateway:
+    Type: 'AWS::ApiGateway::RestApi'
+    Properties:
+      Description: RESTAPI for the POC
+      Name: "poc-rest-api"
+      Parameters:
+        endpointConfigurationTypes: REGIONAL
+  
+  APIGatewayUsersResource:
+    Type: 'AWS::ApiGateway::Resource'
+    Properties:
+      RestApiId: !Ref APIGateway
+      ParentId: !GetAtt 
+        - APIGateway
+        - RootResourceId
+      PathPart: users
+
+  APIGatewayUserResource:
+    Type: 'AWS::ApiGateway::Resource'
+    Properties:
+      RestApiId: !Ref APIGateway
+      ParentId: !Ref APIGatewayUsersResource
+      PathPart: '{user}'
+
+  APIGatewayOrdersResource:
+    Type: 'AWS::ApiGateway::Resource'
+    Properties:
+      RestApiId: !Ref APIGateway
+      ParentId: !Ref APIGatewayUserResource
+      PathPart: orders
+
+  APIGatewayOrderResource:
+    Type: 'AWS::ApiGateway::Resource'
+    Properties:
+      RestApiId: !Ref APIGateway
+      ParentId: !Ref APIGatewayOrdersResource
+      PathPart: '{order}'
+
+  MethodGetOrders:
+    Type: AWS::ApiGateway::Method
+    Properties: 
+      HttpMethod: GET
+      AuthorizationType: NONE
+      Integration:
+        Credentials: !GetAtt QueryRole.Arn
+        IntegrationHttpMethod: POST
+        IntegrationResponses:
+        - ResponseTemplates:
+            application/json: |
+              #set($inputRoot = $input.path('$'))
+              [
+                  #foreach($elem in $inputRoot.Items) {
+                      "orderId": "$elem.SK.S.split('#order#')[1]",
+                      "orderTotalValue": "$elem.order_total_value.N"
+                  }#if($foreach.hasNext),#end
+                  #end
+              ]
+          StatusCode: 200
+        PassthroughBehavior: WHEN_NO_TEMPLATES
+        RequestTemplates: 
+          application/json: "#set($userId = \"#user#\" + \"$input.params('user')\")\n{\"TableName\":\"orders-poc-table\",\"KeyConditionExpression\":\"PK=:v1\",\"ExpressionAttributeValues\":{\":v1\":{\"S\":\"$userId\"}}}}"
+        Type: AWS
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:dynamodb:action/Query"
+      MethodResponses:
+        - ResponseModels:
+            application/json: Empty
+          StatusCode: 200
+      ResourceId: !Ref APIGatewayOrdersResource
+      RestApiId: !Ref APIGateway
+
+  MethodGetOrder:
+    Type: AWS::ApiGateway::Method
+    Properties: 
+      HttpMethod: GET
+      AuthorizationType: NONE
+      Integration:
+        Credentials: !GetAtt QueryRole.Arn
+        IntegrationHttpMethod: POST
+        IntegrationResponses:
+        - ResponseTemplates:
+            application/json: |
+              #set($inputRoot = $input.path('$'))
+              {
+                  "orderId": "$inputRoot.Items[0].SK.S.split('#order#')[1]",
+                  "orderTotalValue": $inputRoot.Items[0].order_total_value.N
+              }
+          StatusCode: 200
+        PassthroughBehavior: WHEN_NO_TEMPLATES
+        RequestTemplates: 
+          application/json: |
+            #set($userId = "#user#" + "$input.params('user')")
+            #set($orderId = "#order#" + "$input.params('order')")
+            {
+                "TableName": "orders-poc-table",
+                "KeyConditionExpression": "PK = :v1 AND SK = :v2",
+                "ExpressionAttributeValues": {
+                    ":v1": {"S": "$userId"},
+                    ":v2": {"S": "$orderId"}
+                }
+            }
+        Type: AWS
+        Uri: !Sub "arn:aws:apigateway:${AWS::Region}:dynamodb:action/Query"
+      MethodResponses:
+        - ResponseModels:
+            application/json: Empty
+          StatusCode: 200
+      ResourceId: !Ref APIGatewayOrderResource
+      RestApiId: !Ref APIGateway
+
+  APIGatewayDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn:
+      - APIGateway
+      - MethodGetOrders
+      - MethodGetOrder
+    Properties:
+      RestApiId: !Ref APIGateway
+      Description: POC Deployment
+
+  APIGatewayStage:
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      DeploymentId: !Ref APIGatewayDeployment
+      Description: POC stage
+      RestApiId: !Ref APIGateway
+      StageName: test

@@ -1,0 +1,5 @@
+#set($inputRoot = $input.path('$'))
+{
+    "orderId": "$inputRoot.Items[0].SK.S.split('#order#')[1]",
+    "orderTotalValue": $inputRoot.Items[0].order_total_value.N
+}

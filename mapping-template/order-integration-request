@@ -1,0 +1,11 @@
+#set($userId = "#user#" + "$input.params('user')")
+#set($orderId = "#order#" + "$input.params('order')")
+
+{
+    "TableName": "orders-poc",
+    "KeyConditionExpression": "PK = :v1 AND SK = :v2",
+    "ExpressionAttributeValues": {
+        ":v1": {"S": "$userId"},
+        ":v2": {"S": "$orderId"}
+    }
+}
